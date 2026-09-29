@@ -1,0 +1,2435 @@
+---
+title: "Elexon data"
+format: html
+editor: source
+---
+
+```{r globalopt, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, echo = FALSE, cache = F)
+```
+
+## packages
+
+```{r include=FALSE}
+require(tidyverse)
+require(kableExtra)
+require(parallel)
+require(dplyr)
+require(scales)
+require(ggsci)
+
+require(jsonlite)
+require(httr)
+
+require(data.table)
+require(sf)
+library(rnaturalearth)
+library(rnaturalearthdata)
+
+```
+
+```{r}
+# Set the theme for all plots
+theme_set(theme_bw())
+```
+
+## Functions
+
+```{r}
+mc <- detectCores()-2
+# list.files("~/OneDrive")
+source("~/OneDrive/kablefunction.R")
+```
+
+## Data
+
+```{r}
+path <- "~/Documents/elexon"
+elexon_path <- "/home/s2441782/Documents/elexon/"
+```
+
+### Aggregated Data
+
+```{r}
+# Actual Aggregated Generation Per Type (AGPT / B1620)
+
+aggr.df <- read.csv(
+  file.path(path,"aggregated_gen_type_20240718.csv")) %>% 
+  mutate(StartTime = as.POSIXct(StartTime, format = "%Y-%m-%dT%H:%M:%OS"))
+
+aggr.df %>% 
+  # filter(grepl("Wind",PsrType, ignore.case = TRUE)  ) %>% 
+  # filter(minute(StartTime)==0) %>%
+  ggplot()+
+  geom_line(aes(StartTime,Quantity,colour = PsrType, group = PsrType))+
+  theme(legend.position = "bottom")+
+  scale_x_datetime(date_labels = "%Y-%m-%d %H:%M", date_breaks = "1 day")
+
+aggr.df %>% 
+  filter(grepl("Wind|Solar",PsrType, ignore.case = TRUE)  ) %>%
+  # filter(minute(StartTime)==0) %>%
+  ggplot()+
+  geom_line(aes(StartTime,Quantity,colour = PsrType, group = PsrType))+
+  theme(legend.position = "bottom")+
+  scale_x_datetime(date_labels = "%Y-%m-%d %H:%M", date_breaks = "1 day")+
+  scale_color_lancet()
+```
+
+```{r}
+aggr.df %>% 
+  # filter(grepl("Wind",PsrType, ignore.case = TRUE)  ) %>% 
+  select(StartTime,PsrType,Quantity)
+```
+
+```{r}
+url <- 'https://data.elexon.co.uk/bmrs/api/v1/datasets/AGPT?publishDateTimeFrom=2024-07-18%2018%3A00&publishDateTimeTo=2024-07-21%2009%3A00&format=json' 
+response <- GET(url, accept("text/plain"))
+json_data <- content(response, "text", encoding = "UTF-8")
+
+json_data %>% 
+  fromJSON(flatten = T)
+```
+
+### forecast
+
+```{r}
+url <- "https://data.elexon.co.uk/bmrs/api/v1/datasets/DGWS/stream?publishDateTimeFrom=2024%2F07%2F18%2007%3A00&publishDateTimeTo=2024%2F07%2F21%2010%3A00"
+response <- GET(url, accept("text/plain"))
+
+json_data <- content(response, "text", encoding = "UTF-8")
+forecast <- fromJSON(json_data) %>% 
+  mutate(startTime = as.POSIXct(startTime, format = "%Y-%m-%dT%H:%M:%OS"))
+
+
+
+```
+
+```{r}
+forecast %>% 
+  ggplot()+
+  geom_line(aes(startTime,quantity,colour = psrType, group = psrType))+
+  theme(legend.position = "bottom")+
+  scale_x_datetime(date_labels = "%Y-%m-%d %H:%M", date_breaks = "1 day")+
+  scale_color_lancet()
+```
+
+### disaggregated data
+
+#### list of BUs
+
+```{r}
+url <- "https://data.elexon.co.uk/bmrs/api/v1/reference/bmunits/all"
+response <- GET(url, accept("text/plain"))
+json_data <- content(response, "text", encoding = "UTF-8")
+bmus <- fromJSON(json_data) 
+```
+
+```{r}
+bmus %>% 
+  filter(grepl("Hornsea",leadPartyName))
+```
+
+```{r}
+# wind.bmus <- bmus %>% 
+#   filter(grepl("WIND",fuelType), fpnFlag)
+# wind.bmus
+```
+
+#### capacity
+
+```{r}
+url <- "https://data.elexon.co.uk/bmrs/api/v1/datasets/IGCPU?publishDateTimeFrom=2023-01-01T00%3A00%3A00Z&publishDateTimeTo=2024-01-02T00%3A00%3A00Z&format=json"
+
+response <- GET(url, accept("text/plain"))
+json_data <- content(response, "text", encoding = "UTF-8")
+capacity <- fromJSON(json_data)$data
+capacity %>% 
+  filter(grepl("Wind|Solar",psrType, ignore.case = TRUE)  ) %>% 
+  filter(!is.na(bmUnit)) %>% 
+  arrange(desc(installedCapacity))
+```
+```{r}
+capacity %>% 
+  filter(grepl("Wind|Solar",psrType, ignore.case = TRUE)  ) %>%
+  # group_by(psrType) %>% 
+  summarise(n=n())
+```
+
+#### BMU subset
+
+```{r}
+url0 <- "https://data.elexon.co.uk/bmrs/api/v1/datasets/B1610/stream?from=2025-05-25T00%3A00Z&to=2025-06-04T00%3A00Z&bmUnit="
+bmu.string <- "T_HOWBO-1&bmUnit=T_HOWBO-3&bmUnit=T_HOWBO-2&bmUnit=T_HOWAO-3&bmUnit=T_HOWAO-2&bmUnit=T_HOWAO-1"
+
+
+url <- paste0(url0,bmu.string)
+
+response <- GET(url, accept("text/plain"))
+json_data <- content(response, "text", encoding = "UTF-8")
+generation.bmu0 <- fromJSON(json_data)
+```
+
+```{r}
+generation.bmu0 %>% 
+  mutate(halfHourEndTime = as.POSIXct(halfHourEndTime, format = "%Y-%m-%dT%H:%M:%OS")) %>% 
+  ggplot()+
+  geom_line(aes(halfHourEndTime,quantity,colour = bmUnit, group = bmUnit))+
+  theme(legend.position = "bottom")+
+  scale_x_datetime(date_labels = "%Y-%m-%d %H:%M")+
+  scale_color_lancet()+
+  labs(y = "Generation (MW)", x = "time")
+```
+
+#### BMU full list
+
+```{r}
+url0 <- "https://data.elexon.co.uk/bmrs/api/v1/datasets/B1610/stream?from=2025-06-01T00%3A00Z&to=2025-06-04T00%3A00Z&bmUnit="
+
+bmu.string <- capacity %>% 
+  filter(grepl("Wind|Solar",psrType, ignore.case = TRUE)  ) %>% 
+  filter(!is.na(bmUnit)) %>% 
+  pull(bmUnit) %>% 
+  paste(.,collapse = "&bmUnit=")
+
+
+# bmu.string <- "T_HOWBO-1&bmUnit=T_HOWBO-3&bmUnit=T_HOWBO-2&bmUnit=T_HOWAO-3&bmUnit=T_HOWAO-2&bmUnit=T_HOWAO-1"
+
+
+url <- paste0(url0,bmu.string)
+
+response <- GET(url, accept("text/plain"))
+json_data <- content(response, "text", encoding = "UTF-8")
+generation.bmu <- fromJSON(json_data) %>% 
+  mutate(halfHourEndTime = as.POSIXct(halfHourEndTime, format = "%Y-%m-%dT%H:%M:%OS")) 
+```
+
+```{r}
+generation.bmu %>%
+  pull(bmUnit) %>% 
+  unique() %>% 
+  length()
+# view(generation.bmu)
+
+generation.bmu %>% 
+  group_by(halfHourEndTime,settlementPeriod) %>% 
+  summarise(quantity = sum(quantity)) %>% 
+  ggplot()+
+  geom_line(aes(halfHourEndTime,quantity))+
+  theme(legend.position = "bottom")+
+  scale_x_datetime(date_labels = "%Y-%m-%d %H:%M", date_breaks = "1 day")+
+  scale_color_lancet()
+```
+
+```{r}
+
+aggr.df %>% 
+  filter(grepl("Wind",PsrType, ignore.case = TRUE)  ) %>% 
+  group_by(StartTime,SettlementPeriod) %>% 
+  summarise(quantity = sum(Quantity)) %>% 
+  mutate(dat.source="aggregate") %>% 
+  bind_rows(
+    generation.bmu %>% 
+      group_by(halfHourEndTime,settlementPeriod) %>%
+      summarise(quantity = sum(quantity)) %>% 
+      mutate(StartTime=halfHourEndTime) %>% 
+      mutate(dat.source="bmus") 
+  ) %>% 
+  ggplot()+
+  geom_line(aes(StartTime,quantity,col=dat.source))+
+  theme(legend.position = "bottom")+
+  scale_x_datetime(date_labels = "%Y-%m-%d %H:%M", date_breaks = "1 day")+
+  scale_color_lancet()
+```
+
+# updated code
+
+### AGPT
+
+```{r}
+time_seq <- dates <- seq.Date(
+  from = as.Date("2025-01-01"),
+  to = as.Date("2025-05-26"),
+  by = "4 days"
+)
+
+extraction <- lapply(
+  seq_along(time_seq[-1]),
+  
+  
+  \(i){
+    
+  t0 <- as.character(time_seq[i])
+  t1 <- as.character(time_seq[i+1])
+  dt0 <- paste(t0, "09:00")
+  dt1 <- paste(t1, "09:00")
+  dt0_enc <- URLencode(dt0, reserved = TRUE)
+  dt1_enc <- URLencode(dt1, reserved = TRUE)
+  url <- sprintf("https://data.elexon.co.uk/bmrs/api/v1/datasets/AGPT/stream?publishDateTimeFrom=%s&publishDateTimeTo=%s&format=json", dt0_enc, dt1_enc)
+  
+  response <- GET(url, accept("text/plain"))
+  json_data <- content(response, "text", encoding = "UTF-8")
+  # browser()
+  agpt0 <- json_data %>% 
+    fromJSON(flatten = T) %>% 
+    mutate(across(matches("Time"), ~ as.POSIXct(., format = "%Y-%m-%dT%H:%M:%OS")))
+  agpt0}
+)
+
+
+
+```
+
+```{r}
+
+agpt25 <- extraction %>% bind_rows()
+
+# list.files(path)
+agpt25 %>% 
+  write.csv(
+    gzfile(file.path(path,"aggregated_gen_type_2025.csv.gz"))
+  )
+```
+
+####plots
+
+```{r}
+agpt25 %>% 
+  filter(as.Date(settlementDate)>="2025-04-01") %>% 
+  filter(grepl("Wind",psrType, ignore.case = TRUE)  ) %>%
+  filter(minute(startTime)==0) %>%
+  ggplot()+
+  geom_line(aes(startTime,quantity,colour = psrType, group = psrType))+
+  theme(legend.position = "bottom")+
+  scale_x_datetime(date_labels = "%Y-%m-%d %H:%M")
+
+agpt25 %>% 
+  filter(as.Date(settlementDate)>="2025-05-15") %>% 
+  filter(grepl("Wind|Solar",psrType, ignore.case = TRUE)  ) %>%
+  # filter(minute(startTime)==0) %>%
+  ggplot()+
+  geom_line(aes(startTime,quantity,colour = psrType, group = psrType))+
+  theme(legend.position = "bottom")+
+  scale_x_datetime(date_labels = "%Y-%m-%d %H:%M")+
+  scale_color_lancet()
+```
+
+### prediction
+
+```{r}
+
+time_seq <- dates <- seq.Date(
+  from = as.Date("2025-01-01"),
+  to = as.Date("2025-05-26"),
+  by = "4 days"
+)
+base_url <- "https://data.elexon.co.uk/bmrs/api/v1/datasets/DGWS/stream?"
+
+extraction <- lapply(
+  seq_along(time_seq[-1]),
+  
+  
+  \(i){
+    
+  t0 <- as.character(time_seq[i])
+  t1 <- as.character(time_seq[i+1])
+  dt0 <- paste(t0, "09:00")
+  dt1 <- paste(t1, "09:00")
+  dt0_enc <- URLencode(dt0, reserved = TRUE)
+  dt1_enc <- URLencode(dt1, reserved = TRUE)
+  url <- sprintf(
+    "%spublishDateTimeFrom=%s&publishDateTimeTo=%s&format=json",
+    base_url,dt0_enc, dt1_enc)
+  
+  response <- GET(url, accept("text/plain"))
+  json_data <- content(response, "text", encoding = "UTF-8")
+  # browser()
+  df <- json_data %>% 
+    fromJSON(flatten = T) %>% 
+    mutate(across(matches("Time"), ~ as.POSIXct(., format = "%Y-%m-%dT%H:%M:%OS")))
+  df}
+)
+
+dgws25 <- extraction %>% bind_rows()
+dgws25 %>% 
+  write.csv(
+    gzfile(file.path(path,"dayahead_generation_windsolar_2025.csv.gz"))
+  )
+```
+
+```{r}
+dgws25 %>% 
+  filter(processType %in% c("Day ahead")) %>% 
+  filter(as.Date(settlementDate)>="2025-05-10") %>% 
+  filter(minute(startTime)==0) %>%
+  ggplot()+
+  geom_line(aes(startTime,quantity,colour = psrType, group = psrType))+
+  theme(legend.position = "bottom")+
+  scale_x_datetime(date_labels = "%y-%m-%d %H:%M", breaks = "3 days")+
+  scale_color_lancet()
+```
+
+### disaggregated
+
+```{r}
+url <- "https://data.elexon.co.uk/bmrs/api/v1/reference/bmunits/all"
+response <- GET(url, accept("text/plain"))
+json_data <- content(response, "text", encoding = "UTF-8")
+bmus <- fromJSON(json_data) 
+```
+
+```{r}
+bmus %>% 
+  filter(grepl("Hornsea",leadPartyName))
+```
+
+```{r}
+# wind.bmus <- bmus %>% 
+#   filter(grepl("WIND",fuelType), fpnFlag) %>% 
+#   filter(productionOrConsumptionFlag %in% c("P"))
+
+wind.bmus <- bmus %>% 
+  filter(
+    grepl("WIND",fuelType) | 
+      grepl("wind|offshore", leadPartyName, ignore.case = TRUE )|
+      grepl("wind farm|windfarm", bmUnitName, ignore.case = TRUE )) %>% 
+  filter(!is.na(elexonBmUnit))
+wind.bmus
+```
+
+```{r}
+wind.bmus %>% 
+  write.csv(
+    .,gzfile(file.path(path, "wind_bmu.csv.gz"))
+  )
+```
+
+###capacity
+
+```{r}
+
+
+
+time_seq <- dates <- seq.Date(
+  from = as.Date("2025-05-01"),
+  to = as.Date("2025-05-26"),
+  by = "4 days"
+)
+
+t0 <- "2023-01-01T"
+t1 <- "2024-01-02T"
+dt0 <- paste0(t0, "00:00")
+dt1 <- paste0(t1, "00:00")
+dt0_enc <- URLencode(dt0, reserved = TRUE)
+dt1_enc <- URLencode(dt1, reserved = TRUE)
+base_url <- "https://data.elexon.co.uk/bmrs/api/v1/datasets/IGCPU/stream?"
+url <- sprintf(
+  # "%spublishDateTimeFrom=2023-01-01T00%3A00%3A00Z&publishDateTimeTo=2024-01-02T00%3A00%3A00Z&format=json",
+  "%spublishDateTimeFrom=%s&publishDateTimeTo=%s&format=json",
+    base_url,dt0_enc, dt1_enc)
+
+response <- GET(url, accept("text/plain"))
+json_data <- content(response, "text", encoding = "UTF-8")
+capacity <- fromJSON(json_data)
+capacity %>% 
+  filter(grepl("Wind|Solar",psrType, ignore.case = TRUE)  ) %>% 
+  filter(!is.na(bmUnit)) %>% 
+  arrange(desc(installedCapacity))
+
+```
+```{r}
+capacity_latest <- capacity %>% 
+  filter(!is.na(installedCapacity)) %>% 
+  filter(installedCapacity>0) %>% 
+  group_by(bmUnit, psrType) %>% 
+  mutate(effectiveFrom = as.Date(effectiveFrom)) %>% 
+  filter(effectiveFrom == max(effectiveFrom))
+  
+capacity_latest %>% 
+  group_by(psrType) %>% 
+  summarise(
+    n = n(),installedCapacity = sum(installedCapacity, na.rm = T))
+```
+
+#### BMU full list
+
+```{r}
+
+
+t1 <- paste0("2025-06-01T","00:00Z") %>% URLencode(., reserved = TRUE)
+t2 <- paste0("2025-06-04T","00:00Z") %>% URLencode(., reserved = TRUE)
+
+base_url <- "https://data.elexon.co.uk/bmrs/api/v1/datasets/B1610/stream?"
+url0 <- sprintf(
+  "%sfrom=%s&to=%s&bmUnit=",
+  base_url,t1,t2)
+
+fragments <- 3
+n_bmu <- nrow(wind.bmus)
+parts_vec <- seq(1,n_bmu, length.out = fragments+1) %>% trunc()
+
+# list strings in fragments
+bmu_strings <- mapply(
+  \(left,right){
+    bmu.string <- wind.bmus %>%
+      slice(left:right) %>%
+      pull(elexonBmUnit) %>%
+      paste(., collapse = "&bmUnit=")
+    
+    print(bmu.string)
+  },
+  left = parts_vec[1:fragments]+c(0,rep(1,fragments-1)),
+  right = parts_vec[-1]
+  )
+# query data by fragment
+bmu_df <- lapply(
+  bmu_strings, 
+  \(string){
+    url <- paste0(url0,string)
+    response <- GET(url, accept("text/plain"))
+    json_data <- content(response, "text", encoding = "UTF-8")
+    generation.bmu <- fromJSON(json_data) %>%
+      mutate(halfHourEndTime = as.POSIXct(halfHourEndTime, format = "%Y-%m-%dT%H:%M:%OS")) 
+    generation.bmu
+  }) %>% bind_rows()
+```
+
+```{r}
+bmu_df %>% #bind_rows() %>% 
+  filter(grepl("HOWAO",bmUnit )) %>% 
+  filter(as.Date(settlementDate)>="2025-06-01") %>% 
+  filter(minute(halfHourEndTime)==0) %>%
+  ggplot()+
+  geom_line(aes(halfHourEndTime,quantity,colour = bmUnit))+
+  theme(legend.position = "bottom")+
+  scale_x_datetime(date_labels = "%y-%m-%d %H:%M")+
+  scale_color_lancet()
+```
+
+```{r}
+
+time_seq <- dates <- seq.Date(
+  from = as.Date("2025-01-01"),
+  to = as.Date("2025-06-01"),
+  by = "4 days"
+)
+base_url <- "https://data.elexon.co.uk/bmrs/api/v1/datasets/B1610/stream?"
+
+extraction <- lapply(
+  seq_along(time_seq[-1]),
+  
+  \(i){
+    
+  t0 <- as.character(time_seq[i])
+  t1 <- as.character(time_seq[i+1])
+  dt0 <- paste(t0, "09:00")
+  dt1 <- paste(t1, "09:00")
+  dt0_enc <- URLencode(dt0, reserved = TRUE)
+  dt1_enc <- URLencode(dt1, reserved = TRUE)
+  url <- sprintf(
+    "%sfrom=%s&to=%s&bmUnit=",
+    base_url,dt0_enc, dt1_enc)
+  # browser()
+  fragments <- 3
+  n_bmu <- nrow(wind.bmus)
+  parts_vec <- seq(1,n_bmu, length.out = fragments+1) %>% trunc()
+  
+  # list strings in fragments
+  bmu_strings <- mapply(
+    \(left,right){
+      bmu.string <- wind.bmus %>%
+        slice(left:right) %>%
+        pull(elexonBmUnit) %>%
+        paste(., collapse = "&bmUnit=")
+      
+      # print(bmu.string)
+    },
+    left = parts_vec[1:fragments]+c(0,rep(1,fragments-1)),
+    right = parts_vec[-1]
+    )
+  
+  # query data by fragment
+  bmu_df <- lapply(
+    bmu_strings, 
+    \(string){
+      url <- paste0(url,string)
+      response <- GET(url, accept("text/plain"))
+      json_data <- content(response, "text", encoding = "UTF-8")
+      generation.bmu <- fromJSON(json_data) %>%
+        mutate(across(matches("Time"), ~ as.POSIXct(., format = "%Y-%m-%dT%H:%M:%OS")))
+      generation.bmu
+    }) %>% bind_rows()
+  # browser()
+  bmu_df
+  }
+)
+bmu_25 <- extraction %>% bind_rows()
+
+bmu_25 %>% 
+  write.csv(
+    gzfile(file.path(path,"wind_gen_bmu_2025.csv.gz"))
+  )
+```
+
+```{r}
+bmu_25 %>% 
+  filter(grepl("HOWAO",bmUnit )) %>% 
+  # filter(as.Date(settlementDate)>="2025-06-01") %>% 
+  filter(minute(halfHourEndTime)==0) %>%
+  ggplot()+
+  geom_line(aes(halfHourEndTime,quantity,colour = bmUnit))+
+  theme(legend.position = "bottom")+
+  scale_x_datetime(date_labels = "%y-%m-%d %H:%M")+
+  scale_color_lancet()
+```
+
+## Functions
+
+### AGPT
+
+```{r}
+get_agpt <- function(
+    year = 2024,
+    path,
+    file_name = sprintf("aggregated_gen_type_%d.csv.gz",year),
+    end_time = NULL
+){
+  
+  if (is.null(end_time)){
+    time_seq <- dates <- seq.Date(
+    from = as.Date(sprintf("%d-01-01",year)),
+    to = as.Date(sprintf("%d-12-31",year)),
+    by = "4 days"
+    )
+    time_seq <- c(time_seq, as.Date(sprintf("%d-01-01",year+1)))
+  } else{
+    time_seq <- dates <- seq.Date(
+    from = as.Date(sprintf("%d-01-01",year)),
+    to = as.Date(end_time),
+    by = "4 days"
+    )
+    if(time_seq[length(time_seq)]<end_time) time_seq <- c(time_seq,end_time)
+  }
+  
+  
+  # browser()
+  extraction <- lapply(
+    seq_along(time_seq[-1]),
+    
+    
+    \(i){
+      
+    t0 <- as.character(time_seq[i])
+    t1 <- as.character(time_seq[i+1])
+    dt0 <- paste(t0, "01:00")
+    dt1 <- paste(t1, "01:00")
+    dt0_enc <- URLencode(dt0, reserved = TRUE)
+    dt1_enc <- URLencode(dt1, reserved = TRUE)
+    
+    base_url <- "https://data.elexon.co.uk/bmrs/api/v1/datasets/AGPT/stream?"
+    
+    url <- sprintf(
+      "%spublishDateTimeFrom=%s&publishDateTimeTo=%s&format=json",
+      base_url,dt0_enc, dt1_enc)
+    
+    response <- GET(url, accept("text/plain"))
+    json_data <- content(response, "text", encoding = "UTF-8")
+    # browser()
+    agpt0 <- json_data %>% 
+      fromJSON(flatten = T) %>% 
+      mutate(across(matches("Time"), ~ as.POSIXct(., format = "%Y-%m-%dT%H:%M:%OS")))
+    agpt0}
+  )
+  
+  agptyear <- extraction %>% bind_rows()
+
+  agptyear %>% 
+    write.csv(
+      gzfile(file.path(path,file_name))
+    )
+  
+  invisible(agptyear)
+}
+
+
+
+
+
+
+agpt25 <- get_agpt(
+  year = 2025,
+  path = file.path(path,"data_by_year"),
+  end_time = "2025-05-30")
+```
+
+```{r}
+agpt24 <- get_agpt(
+  year = 2024,
+  path = file.path(path,"data_by_year"))
+agpt23 <- get_agpt(
+  year = 2023,
+  path = file.path(path,"data_by_year"))
+
+agpt22 <- get_agpt(
+  year = 2022,
+  path = file.path(path,"data_by_year"))
+
+agpt21 <- get_agpt(
+  year = 2021,
+  path = file.path(path,"data_by_year"))
+
+agpt20 <- get_agpt(
+  year = 2020,
+  path = file.path(path,"data_by_year"))
+
+```
+
+```{r}
+
+
+```
+
+### day ahead forecast
+
+```{r}
+time_seq <- dates <- seq.Date(
+  from = as.Date("2025-01-01"),
+  to = as.Date("2025-05-26"),
+  by = "4 days"
+)
+base_url <- "https://data.elexon.co.uk/bmrs/api/v1/datasets/DGWS/stream?"
+
+extraction <- lapply(
+  seq_along(time_seq[-1]),
+  
+  
+  \(i){
+    
+  t0 <- as.character(time_seq[i])
+  t1 <- as.character(time_seq[i+1])
+  dt0 <- paste(t0, "09:00")
+  dt1 <- paste(t1, "09:00")
+  dt0_enc <- URLencode(dt0, reserved = TRUE)
+  dt1_enc <- URLencode(dt1, reserved = TRUE)
+  url <- sprintf(
+    "%spublishDateTimeFrom=%s&publishDateTimeTo=%s&format=json",
+    base_url,dt0_enc, dt1_enc)
+  
+  response <- GET(url, accept("text/plain"))
+  json_data <- content(response, "text", encoding = "UTF-8")
+  # browser()
+  df <- json_data %>% 
+    fromJSON(flatten = T) %>% 
+    mutate(across(matches("Time"), ~ as.POSIXct(., format = "%Y-%m-%dT%H:%M:%OS")))
+  df}
+)
+
+dgws25 <- extraction %>% bind_rows()
+dgws25 %>% 
+  write.csv(
+    gzfile(file.path(path,"dayahead_generation_windsolar_2025.csv.gz"))
+  )
+
+get_dwgs <- function(
+    year = 2024,
+    path,
+    file_name = sprintf("dayahead_generation_windsolar_%d.csv.gz",year)
+){
+  
+  time_seq <- dates <- seq.Date(
+  from = as.Date(sprintf("%d-01-01",year)),
+  to = as.Date(sprintf("%d-12-31",year)),
+  by = "4 days"
+  )
+  
+  # if(day(time_seq[length(time_seq)])!=31) 
+    
+  time_seq <- c(time_seq, as.Date(sprintf("%d-01-01",year+1)))
+  
+  # browser()
+  extraction <- lapply(
+    seq_along(time_seq[-1]),
+    
+    
+    \(i){
+      
+    t0 <- as.character(time_seq[i])
+    t1 <- as.character(time_seq[i+1])
+    dt0 <- paste(t0, "01:00")
+    dt1 <- paste(t1, "01:00")
+    dt0_enc <- URLencode(dt0, reserved = TRUE)
+    dt1_enc <- URLencode(dt1, reserved = TRUE)
+    
+    base_url <- "https://data.elexon.co.uk/bmrs/api/v1/datasets/DGWS/stream?"
+    
+    url <- sprintf(
+      "%spublishDateTimeFrom=%s&publishDateTimeTo=%s&format=json",
+      base_url,dt0_enc, dt1_enc)
+    
+    response <- GET(url, accept("text/plain"))
+    json_data <- content(response, "text", encoding = "UTF-8")
+    # browser()
+    dwgs0 <- tryCatch(
+      json_data %>% 
+      fromJSON(flatten = T) #%>% 
+      # mutate(across(matches("Time"), ~ as.POSIXct(., format = "%Y-%m-%dT%H:%M:%OS")))
+      ,
+      error = function(e) {
+        warning(sprintf("Data extraction for day %s failed. Response: %s\n",t0,response$status_code))
+        return(NULL)
+        }
+      )
+    dwgs0}
+  )
+  
+  dwgsyear <- extraction %>% bind_rows()
+
+  dwgsyear %>% 
+    write.csv(
+      gzfile(file.path(path,file_name))
+    )
+  
+  invisible(dwgsyear)
+}
+
+dwgs0 <- get_dwgs(
+  year = 2022,
+  path = file.path(path,"data_by_year"))
+```
+
+```{r}
+
+lapply(
+  2020:2021,
+  \(y) get_dwgs(
+         year = y,
+         path = file.path(path,"data_by_year"))
+       )
+
+```
+
+### BMU detail
+
+```{r}
+time_seq <- dates <- seq.Date(
+  from = as.Date("2025-01-01"),
+  to = as.Date("2025-06-01"),
+  by = "4 days"
+)
+base_url <- "https://data.elexon.co.uk/bmrs/api/v1/datasets/B1610/stream?"
+
+extraction <- lapply(
+  seq_along(time_seq[-1]),
+  
+  \(i){
+    
+  t0 <- as.character(time_seq[i])
+  t1 <- as.character(time_seq[i+1])
+  dt0 <- paste(t0, "09:00")
+  dt1 <- paste(t1, "09:00")
+  dt0_enc <- URLencode(dt0, reserved = TRUE)
+  dt1_enc <- URLencode(dt1, reserved = TRUE)
+  url <- sprintf(
+    "%sfrom=%s&to=%s&bmUnit=",
+    base_url,dt0_enc, dt1_enc)
+  # browser()
+  fragments <- 3
+  n_bmu <- nrow(wind.bmus)
+  parts_vec <- seq(1,n_bmu, length.out = fragments+1) %>% trunc()
+  
+  # list strings in fragments
+  bmu_strings <- mapply(
+    \(left,right){
+      bmu.string <- wind.bmus %>%
+        slice(left:right) %>%
+        pull(elexonBmUnit) %>%
+        paste(., collapse = "&bmUnit=")
+      
+      # print(bmu.string)
+    },
+    left = parts_vec[1:fragments]+c(0,rep(1,fragments-1)),
+    right = parts_vec[-1]
+    )
+  
+  # query data by fragment
+  bmu_df <- lapply(
+    bmu_strings, 
+    \(string){
+      url <- paste0(url,string)
+      response <- GET(url, accept("text/plain"))
+      json_data <- content(response, "text", encoding = "UTF-8")
+      generation.bmu <- fromJSON(json_data) %>%
+        mutate(across(matches("Time"), ~ as.POSIXct(., format = "%Y-%m-%dT%H:%M:%OS")))
+      generation.bmu
+    }) %>% bind_rows()
+  # browser()
+  bmu_df
+  }
+)
+bmu_25 <- extraction %>% bind_rows()
+
+bmu_25 %>% 
+  write.csv(
+    gzfile(file.path(path,"wind_gen_bmu_2025.csv.gz"))
+  )
+```
+
+```{r}
+get_bmugen <- function(
+    year = 2024,
+    path,
+    file_name = sprintf("wind_gen_bmu_%d.csv.gz",year),
+    end_time = NULL
+){
+  
+   if (is.null(end_time)){
+    time_seq <- dates <- seq.Date(
+    from = as.Date(sprintf("%d-01-01",year)),
+    to = as.Date(sprintf("%d-12-31",year)),
+    by = "4 days"
+    )
+    time_seq <- c(time_seq, as.Date(sprintf("%d-01-01",year+1)))
+  } else{
+    time_seq <- dates <- seq.Date(
+    from = as.Date(sprintf("%d-01-01",year)),
+    to = as.Date(end_time),
+    by = "4 days"
+    )
+    if(time_seq[length(time_seq)]<end_time) time_seq <- c(time_seq,end_time)
+  }
+  
+  # browser()
+  extraction <- lapply(
+    seq_along(time_seq[-1]),
+    
+    
+    \(i){
+      
+    t0 <- as.character(time_seq[i])
+    t1 <- as.character(time_seq[i+1])
+    dt0 <- paste(t0, "01:00")
+    dt1 <- paste(t1, "01:00")
+    dt0_enc <- URLencode(dt0, reserved = TRUE)
+    dt1_enc <- URLencode(dt1, reserved = TRUE)
+    
+    base_url <- "https://data.elexon.co.uk/bmrs/api/v1/datasets/B1610/stream?"
+    
+    url <- sprintf(
+      "%sfrom=%s&to=%s&bmUnit=",
+      base_url,dt0_enc, dt1_enc)
+    
+    fragments <- 3
+    n_bmu <- nrow(wind.bmus)
+    parts_vec <- seq(1,n_bmu, length.out = fragments+1) %>% trunc()
+    
+    # list strings in fragments
+    bmu_strings <- mapply(
+      \(left,right){
+        bmu.string <- wind.bmus %>%
+          slice(left:right) %>%
+          pull(elexonBmUnit) %>%
+          paste(., collapse = "&bmUnit=")
+        
+        # print(bmu.string)
+      },
+      left = parts_vec[1:fragments]+c(0,rep(1,fragments-1)),
+      right = parts_vec[-1]
+      )
+    
+    # query data by fragment
+    bmu_df <- lapply(
+      bmu_strings, 
+      \(string){
+        url <- paste0(url,string)
+        response <- GET(url, accept("text/plain"))
+        json_data <- content(response, "text", encoding = "UTF-8")
+        generation.bmu <- tryCatch(
+          fromJSON(json_data) %>%
+          mutate(across(matches("Time"), ~ as.POSIXct(., format = "%Y-%m-%dT%H:%M:%OS"))),
+        error = function(e) {
+        warning(sprintf("Data extraction for day %s failed. Response: %s\n",t0,response$status_code))
+        return(NULL)}
+        )
+      }) %>% bind_rows()
+    
+    bmu_df}
+  )
+  
+  bmugenyear <- extraction %>% bind_rows()
+
+  bmugenyear %>% 
+    write.csv(
+      gzfile(file.path(path,file_name))
+    )
+  
+  invisible(bmugenyear)
+}
+
+bmugen0 <- get_bmugen(
+  year = 2025,
+  path = file.path(path,"data_by_year"),
+  end_time = "2025-06-04 00:30:00 BST"
+  )
+```
+
+```{r}
+lapply(
+  2020:2023,
+  \(y) get_bmugen(
+         year = y,
+         path = file.path(path,"data_by_year"))
+       )
+```
+
+###BOD
+
+```{r}
+get_bod <- function(
+    year = 2024,
+    path,
+    file_name = sprintf("bid_offer_data_%d.csv.gz",year),
+    end_time = NULL
+){
+  
+   if (is.null(end_time)){
+    time_seq <- dates <- seq.Date(
+    from = as.Date(sprintf("%d-01-01",year)),
+    to = as.Date(sprintf("%d-12-31",year)),
+    by = "4 days"
+    )
+    time_seq <- c(time_seq, as.Date(sprintf("%d-01-01",year+1)))
+  } else{
+    time_seq <- dates <- seq.Date(
+    from = as.Date(sprintf("%d-01-01",year)),
+    to = as.Date(end_time),
+    by = "4 days"
+    )
+    if(time_seq[length(time_seq)]<end_time) time_seq <- c(time_seq,end_time)
+  }
+  
+  # browser()
+  extraction <- lapply(
+    seq_along(time_seq[-1]),
+    
+    
+    \(i){
+      
+    t0 <- as.character(time_seq[i])
+    t1 <- as.character(time_seq[i+1])
+    dt0 <- paste(t0, "01:00")
+    dt1 <- paste(t1, "01:00")
+    dt0_enc <- URLencode(dt0, reserved = TRUE)
+    dt1_enc <- URLencode(dt1, reserved = TRUE)
+    
+    base_url <- "https://data.elexon.co.uk/bmrs/api/v1/datasets/BOD/stream?"
+    
+    url <- sprintf(
+      "%sfrom=%s&to=%s&bmUnit=",
+      base_url,dt0_enc, dt1_enc)
+    
+    fragments <- 3
+    n_bmu <- nrow(wind.bmus)
+    parts_vec <- seq(1,n_bmu, length.out = fragments+1) %>% trunc()
+    
+    # list strings in fragments
+    bmu_strings <- mapply(
+      \(left,right){
+        bmu.string <- wind.bmus %>%
+          slice(left:right) %>%
+          pull(elexonBmUnit) %>%
+          paste(., collapse = "&bmUnit=")
+        
+        # print(bmu.string)
+      },
+      left = parts_vec[1:fragments]+c(0,rep(1,fragments-1)),
+      right = parts_vec[-1]
+      )
+    
+    # query data by fragment
+    bmu_df <- lapply(
+      bmu_strings, 
+      \(string){
+        url <- paste0(url,string)
+        response <- GET(url, accept("text/plain"))
+        json_data <- content(response, "text", encoding = "UTF-8")
+        generation.bmu <- tryCatch(
+          fromJSON(json_data) %>%
+          mutate(across(matches("Time"), ~ as.POSIXct(., format = "%Y-%m-%dT%H:%M:%OS"))),
+        error = function(e) {
+        warning(sprintf("Data extraction for day %s failed. Response: %s\n",t0,response$status_code))
+        return(NULL)}
+        )
+      }) %>% bind_rows()
+    
+    bmu_df}
+  )
+  
+  bmugenyear <- extraction %>% bind_rows()
+
+  bmugenyear %>% 
+    write.csv(
+      gzfile(file.path(path,file_name))
+    )
+  
+  invisible(bmugenyear)
+}
+```
+
+```{r}
+bod_22 <- get_boa(
+  year = 2022,
+  path = file.path(path,"data_by_year")
+)
+```
+
+```{r}
+bod_22 %>% head()
+bod_22 %>% 
+  filter(grepl("HOWAO",bmUnit)) %>% 
+  filter(settlementDate %in% "2022-09-26") %>% 
+  view()
+  
+```
+
+###BOA
+
+```{r}
+
+get_boa <- function(
+    year = 2024,
+    path,
+    file_name = sprintf("bid_offer_accept_%d.csv.gz",year),
+    end_time = NULL
+){
+  
+   if (is.null(end_time)){
+    time_seq <- dates <- seq.Date(
+    from = as.Date(sprintf("%d-01-01",year)),
+    to = as.Date(sprintf("%d-12-31",year)),
+    by = "4 days"
+    )
+    time_seq <- c(time_seq, as.Date(sprintf("%d-01-01",year+1)))
+  } else{
+    time_seq <- dates <- seq.Date(
+    from = as.Date(sprintf("%d-01-01",year)),
+    to = as.Date(end_time),
+    by = "4 days"
+    )
+    if(time_seq[length(time_seq)]<end_time) time_seq <- c(time_seq,end_time)
+  }
+  
+  # browser()
+  extraction <- lapply(
+    seq_along(time_seq[-1]),
+    
+    
+    \(i){
+      
+    t0 <- as.character(time_seq[i])
+    t1 <- as.character(time_seq[i+1])
+    dt0 <- paste(t0, "01:00")
+    dt1 <- paste(t1, "01:00")
+    dt0_enc <- URLencode(dt0, reserved = TRUE)
+    dt1_enc <- URLencode(dt1, reserved = TRUE)
+    
+    base_url <- "https://data.elexon.co.uk/bmrs/api/v1/datasets/BOALF/stream?"
+    
+    url <- sprintf(
+      "%sfrom=%s&to=%s&bmUnit=",
+      base_url,dt0_enc, dt1_enc)
+    
+    fragments <- 3
+    n_bmu <- nrow(wind.bmus)
+    parts_vec <- seq(1,n_bmu, length.out = fragments+1) %>% trunc()
+    
+    # list strings in fragments
+    bmu_strings <- mapply(
+      \(left,right){
+        bmu.string <- wind.bmus %>%
+          slice(left:right) %>%
+          pull(elexonBmUnit) %>%
+          paste(., collapse = "&bmUnit=")
+        
+        # print(bmu.string)
+      },
+      left = parts_vec[1:fragments]+c(0,rep(1,fragments-1)),
+      right = parts_vec[-1]
+      )
+    
+    # query data by fragment
+    bmu_df <- lapply(
+      bmu_strings, 
+      \(string){
+        url <- paste0(url,string)
+        response <- GET(url, accept("text/plain"))
+        json_data <- content(response, "text", encoding = "UTF-8")
+        generation.bmu <- tryCatch(
+          fromJSON(json_data) %>%
+          mutate(across(matches("Time"), ~ as.POSIXct(., format = "%Y-%m-%dT%H:%M:%OS"))),
+        error = function(e) {
+        warning(sprintf("Data extraction for day %s failed. Response: %s\n",t0,response$status_code))
+        return(NULL)}
+        )
+      }) %>% bind_rows()
+    
+    bmu_df}
+  )
+  
+  bmugenyear <- extraction %>% bind_rows()
+
+  bmugenyear %>% 
+    write.csv(
+      gzfile(file.path(path,file_name))
+    )
+  
+  invisible(bmugenyear)
+}
+```
+
+```{r}
+boa_22 <- get_boa(
+  year = 2022,
+  path = file.path(path,"data_by_year")
+)
+```
+
+```{r}
+# boa_22 <- fread(file.path(path,"data_by_year",))
+boa_22 %>% 
+  filter(grepl("HOWAO-1",bmUnit)) %>% 
+  filter(settlementDate %in% "2022-09-26") %>% 
+  arrange(settlementPeriodFrom, settlementPeriodTo) %>% 
+  # group_by(settlementPeriodFrom,settlementPeriodTo) %>%
+  # summarise()
+  view()
+
+
+```
+
+```{r}
+boa_22 %>% 
+  filter(grepl("HOWAO",bmUnit)) %>% 
+  filter(settlementDate %in% "2022-09-26") %>% 
+  # filter(timeFrom > "2022-09-26 03:00", timeTo > "2022-09-26 06:00") %>% 
+  arrange(settlementPeriodFrom, settlementPeriodTo) %>% 
+  view()
+  select(settlementPeriodFrom:acceptanceTime)
+```
+
+```{r}
+boa_22 %>% 
+  filter(grepl("HOWAO-1",bmUnit)) %>% 
+  filter(settlementDate %in% "2022-09-26") %>% 
+  arrange(settlementPeriodFrom, settlementPeriodTo) %>% 
+  select(settlementPeriodFrom:acceptanceTime)
+```
+
+### PN
+```{r}
+get_pn <- function(
+    year = 2024,
+    path,
+    file_name = sprintf("phys_notif_%d.csv.gz",year),
+    end_time = NULL
+){
+  
+   if (is.null(end_time)){
+    time_seq <- dates <- seq.Date(
+    from = as.Date(sprintf("%d-01-01",year)),
+    to = as.Date(sprintf("%d-12-31",year)),
+    by = "4 days"
+    )
+    time_seq <- c(time_seq, as.Date(sprintf("%d-01-01",year+1)))
+  } else{
+    time_seq <- dates <- seq.Date(
+    from = as.Date(sprintf("%d-01-01",year)),
+    to = as.Date(end_time),
+    by = "4 days"
+    )
+    if(time_seq[length(time_seq)]<end_time) time_seq <- c(time_seq,end_time)
+  }
+  
+  # browser()
+  extraction <- lapply(
+    seq_along(time_seq[-1]),
+    
+    
+    \(i){
+      
+    t0 <- as.character(time_seq[i])
+    t1 <- as.character(time_seq[i+1])
+    dt0 <- paste(t0, "01:00")
+    dt1 <- paste(t1, "01:00")
+    dt0_enc <- URLencode(dt0, reserved = TRUE)
+    dt1_enc <- URLencode(dt1, reserved = TRUE)
+    
+    base_url <- "https://data.elexon.co.uk/bmrs/api/v1/datasets/PN/stream?"
+    
+    url <- sprintf(
+      "%sfrom=%s&to=%s&bmUnit=",
+      base_url,dt0_enc, dt1_enc)
+    
+    fragments <- 3
+    n_bmu <- nrow(wind.bmus)
+    parts_vec <- seq(1,n_bmu, length.out = fragments+1) %>% trunc()
+    
+    # list strings in fragments
+    bmu_strings <- mapply(
+      \(left,right){
+        bmu.string <- wind.bmus %>%
+          slice(left:right) %>%
+          pull(elexonBmUnit) %>%
+          paste(., collapse = "&bmUnit=")
+        
+        # print(bmu.string)
+      },
+      left = parts_vec[1:fragments]+c(0,rep(1,fragments-1)),
+      right = parts_vec[-1]
+      )
+    
+    # query data by fragment
+    bmu_df <- lapply(
+      bmu_strings, 
+      \(string){
+        url <- paste0(url,string)
+        response <- GET(url, accept("text/plain"))
+        json_data <- content(response, "text", encoding = "UTF-8")
+        generation.bmu <- tryCatch(
+          fromJSON(json_data) %>%
+          mutate(across(matches("Time"), ~ as.POSIXct(., format = "%Y-%m-%dT%H:%M:%OS"))),
+        error = function(e) {
+        warning(sprintf("Data extraction for day %s failed. Response: %s\n",t0,response$status_code))
+        return(NULL)}
+        )
+      }) %>% bind_rows()
+    
+    bmu_df}
+  )
+  
+  bmugenyear <- extraction %>% bind_rows()
+
+  bmugenyear %>% 
+    write.csv(
+      gzfile(file.path(path,file_name))
+    )
+  
+  invisible(bmugenyear)
+}
+```
+
+```{r}
+pn_24 <- get_pn(
+  year = 2024,
+  path = file.path(path,"data_by_year")
+)
+```
+
+```{r}
+# pn_24 <- boa_24
+pn_24 %>% 
+  filter(settlementDate %in% c("2024-12-18")) %>% 
+  group_by(timeTo) %>% 
+  summarise(
+    levelTo = sum(levelTo),
+    levelFrom = sum(levelFrom)) %>% 
+  view()
+```
+
+### QPN
+
+## Figures
+
+### total vs day-ahead
+
+```{r}
+# require(data.table)
+# read 2025 agpt
+elexon_path <- "/home/s2441782/Documents/elexon/"
+# list.files(file.path(elexon_path,"data_by_year"))
+agpt <- fread(
+  file.path(
+    elexon_path,
+    "data_by_year",
+    "aggregated_gen_type_2025.csv.gz"))
+
+# read 2025 forecast
+dgws <- fread(
+  file.path(
+    elexon_path,
+    "data_by_year",
+    "dayahead_generation_windsolar_2025.csv.gz"))
+
+```
+
+```{r}
+dgws
+```
+
+```{r}
+agpt$psrType %>% unique() %>% paste(., collapse = ", ")
+```
+
+```{r}
+agpt %>% 
+  # filter(as.Date(settlementDate)>="2025-04-01") %>% 
+  filter(grepl("Wind",psrType, ignore.case = TRUE)  ) %>%
+  filter(minute(startTime)==0) %>%
+  ggplot()+
+  geom_line(aes(startTime,quantity,colour = psrType, group = psrType))+
+  theme(legend.position = "bottom")+
+  scale_x_datetime(date_labels = "%Y-%m-%d %H:%M")+
+  scale_y_continuous(limits = c(0,12500))+
+  scale_color_aaas()
+
+
+agpt %>% 
+  group_by(settlementDate, psrType) %>% 
+  summarise(quantity = mean(quantity), .groups = "drop") %>% 
+  filter(grepl("Wind",psrType, ignore.case = TRUE)  ) %>%
+  ggplot()+
+  geom_line(aes(settlementDate,quantity,colour = psrType, group = psrType))+
+  theme(legend.position = "bottom")+
+  scale_x_date()+
+  scale_y_continuous(limits = c(0,12500))+
+  scale_color_aaas()
+  # scale_x_datetime(date_labels = "%Y-%m-%d %H:%M")
+```
+
+```{r}
+dwgs %>% 
+  filter(processType %in% c("Day ahead")) %>% 
+  # filter(as.Date(settlementDate)>="2025-04-01") %>% 
+  filter(grepl("Wind",psrType, ignore.case = TRUE)  ) %>%
+  filter(minute(startTime)==0) %>%
+  ggplot()+
+  geom_line(aes(startTime,quantity,colour = psrType, group = psrType))+
+  theme(legend.position = "bottom")+
+  scale_x_datetime(date_labels = "%Y-%m-%d %H:%M")+
+  scale_y_continuous(limits = c(0,12500))+
+  scale_color_aaas()
+
+dwgs %>%
+  filter(processType %in% c("Day ahead")) %>% 
+  group_by(settlementDate, psrType) %>% 
+  summarise(quantity = mean(quantity,na.rm = T), .groups = "drop") %>% 
+  filter(grepl("Wind",psrType, ignore.case = TRUE)  ) %>%
+  ggplot()+
+  geom_line(aes(settlementDate,quantity,colour = psrType, group = psrType))+
+  theme(legend.position = "bottom")+
+  scale_x_date()+
+  scale_y_continuous(limits = c(0,12500))+
+  scale_color_aaas()
+```
+
+### aggregation vs totals
+
+```{r, fig.height=7, fig.width=6}
+
+dwgs %>%
+  filter(processType %in% c("Day ahead")) %>% 
+  group_by(settlementDate, psrType) %>% 
+  summarise(quantity = mean(quantity,na.rm = T), .groups = "drop") %>% 
+  mutate(series = "forecast") %>% 
+  bind_rows(
+    agpt %>% 
+      group_by(settlementDate, psrType) %>% 
+      summarise(quantity = mean(quantity), .groups = "drop") %>% 
+      filter(grepl("Wind|Solar",psrType, ignore.case = TRUE)  ) %>%
+      mutate(series = "observed")
+  ) %>% 
+  mutate(
+    psrType = factor(
+      psrType, 
+      levels = c("Wind Offshore","Wind Onshore","Solar")),
+    series = factor(series, levels = c("observed","forecast"))
+    ) %>% 
+  ggplot()+
+  geom_line(aes(settlementDate,quantity,colour = series))+
+  facet_wrap(~psrType,nrow = 3)+
+  theme(legend.position = "bottom")+
+  scale_x_date()+
+  scale_y_continuous(limits = c(0,12500))+
+  scale_color_manual(values = c(pal_aaas()(2)[2],pal_aaas()(2)[1]))+
+  labs(y="generation (MW)", x = "Date", col = "")
+
+```
+
+### BMU ids
+
+```{r}
+# list.files(path)
+id_catalog <- readxl::read_xlsx(
+  path = file.path(path,"osuked","id_dictionary.xlsx")
+) %>% 
+  drop_na() %>% 
+   rename(
+    rep_id = `REPD ID (New)`,
+    bmu_id = `Settlement BMU ID`,
+    dict_id = `Dictionary ID`,
+    name = `Common Name`
+    )
+
+repdb <- fread(
+  file.path(path,"osuked","renewable-energy-planning-database-q2-june-2021.csv")
+)
+
+repdb %>% 
+  filter(grepl("Wind|Solar",`Technology Type`)) %>% 
+  filter(`Development Status (short)` %in% c("Operational")) %>% 
+  group_by(`Technology Type`) %>% 
+  summarise(
+    n = n(),
+    capacity_available = sum(!is.na(`CfD Capacity (MW)`)),
+    location_available = sum(!is.na(`X-coordinate`))) %>% 
+  janitor::adorn_totals() %>% 
+  kable() %>% 
+  kable_styling(full_width = F)
+```
+
+### map
+
+#### Renewable energy planning database (UK gov)
+
+```{r fig.width=5, fig.height=7}
+
+
+uk_ie <- ne_countries(scale = "medium", returnclass = "sf") %>%
+  filter(admin %in% c("United Kingdom", "Ireland")) %>%
+  st_transform(crs = 4326)
+
+
+repdb %>% 
+  rename(
+    tech_typ = `Technology Type`,
+    devel_stat = `Development Status (short)`,
+    x_coord = `X-coordinate`,
+    y_coord = `Y-coordinate`) %>% 
+  filter(grepl("Wind|Solar",tech_typ)) %>% 
+  filter(devel_stat %in% c("Operational")) %>% 
+  filter(!is.na(x_coord)) %>% 
+  st_as_sf(coords = c("x_coord","y_coord"), crs = 27700) %>% 
+   st_transform(4326) %>% 
+  ggplot()+
+  geom_sf(data = uk_ie, fill = "gray95", color = "gray70") +  # map background
+  geom_sf(aes(geometry = geometry, col = tech_typ),size = 1)+
+  coord_sf(datum = 4326, crs = 4326)+
+  scale_color_manual(values = pal_aaas()(3))+
+  labs(col = "")+ theme(legend.position = "bottom")
+```
+
+#### map for BMUs
+
+```{r}
+# list.files(file.path(path,"data_by_year"))
+# read bmu detal
+bmu_df <- fread(
+  file.path(path,"data_by_year","wind_gen_bmu_2025.csv.gz")
+)
+bmu_df$bmUnit %>% unique()
+```
+
+#### finding elexon BMUs
+too restrictive
+```{r fig.width=5, fig.height=7}
+repd_subset <- repdb %>% 
+  rename(
+    ref_id = `Ref ID`,
+    tech_typ = `Technology Type`,
+    devel_stat = `Development Status (short)`,
+    x_coord = `X-coordinate`,
+    y_coord = `Y-coordinate`) %>% 
+  filter(grepl("Wind|Solar",tech_typ)) %>% 
+  filter(devel_stat %in% c("Operational")) 
+
+repd_wind <- repdb %>% 
+  rename(
+    ref_id = `Ref ID`,
+    tech_typ = `Technology Type`,
+    devel_stat = `Development Status (short)`,
+    x_coord = `X-coordinate`,
+    y_coord = `Y-coordinate`) %>% 
+  filter(grepl("Wind",tech_typ))# %>% 
+  # filter(devel_stat %in% c("Operational")) 
+
+# repd_subset$ref_id %>%uniqu %>%  length()
+
+bmu_in_cat <- id_catalog %>% 
+  filter(rep_id != "-") %>% 
+  pull(bmu_id) %>% 
+  str_split(., ",\\s*") %>% 
+  unlist()
+
+repdid_in_cat <- id_catalog %>% 
+  filter(rep_id != "-") %>% 
+  pull(rep_id) %>% 
+  str_split(., ",\\s*") %>% 
+  unlist()
+
+repd_subset %>% 
+  filter(ref_id %in% repdid_in_cat) %>%
+  st_as_sf(coords = c("x_coord","y_coord"), crs = 27700) %>% 
+   st_transform(4326) %>% 
+  ggplot()+
+  geom_sf(data = uk_ie, fill = "gray95", color = "gray70") +  # map background
+  geom_sf(aes(geometry = geometry, col = tech_typ),size = 1)+
+  coord_sf(datum = 4326, crs = 4326)+
+  # scale_color_aaas()+
+  scale_color_manual(values = pal_aaas()(3)[c(2,3)])+
+  labs(col = "")+ theme(legend.position = "bottom")
+```
+
+```{r}
+list.files(file.path(path))
+loc_alt <- read.csv(file.path(path,"plant-locations.csv"))
+id_catalog %>% 
+  separate_rows(bmu_id, sep = ",\\s*")
+
+loc_alt %>% 
+  filter(dictionary_id %in% id_catalog$dict_id[])
+  
+
+elexon_bmus <- wind.bmus$elexonBmUnit %>% unique()
+
+# sum(elexon_bmus %in% bmu_in_cat )
+```
+
+#### extra elexon bmus
+
+```{r fig.height=7, fig.width=5}
+# loc_alt %>% 
+#   filter()
+
+
+bmu_to_dict <- id_catalog %>% 
+  separate_rows(bmu_id, sep = ",\\s*") %>%
+  select(dict_id, name, bmu_id, rep_id)
+
+bmu_25 <- bmu_df %>% 
+  group_by(bmUnit) %>% 
+  summarise(quantity = mean(quantity, na.rm = TRUE)) %>% 
+  left_join(
+    bmu_to_dict,
+    by = c("bmUnit"= "bmu_id")
+  ) %>% 
+  left_join(
+    loc_alt,
+    by = c("dict_id"= "dictionary_id")
+  ) %>% 
+  filter(!is.na(longitude)) %>%
+  st_as_sf(coords = c("longitude","latitude"), crs = 4326)
+
+bmu_25 %>% 
+  ggplot()+
+  geom_sf(data = uk_ie, fill = "gray95", color = "gray70") +  # map background
+  # geom_sf(aes(geometry = geometry, size = quantity), col = "darkgreen")+
+  geom_sf(aes(geometry = geometry), col =  pal_aaas()(3)[c(3)])+
+  labs(col ="Mean day generation MW")+
+  theme(legend.position = "bottom")
+
+```
+
+####completing dictionary
+
+```{r}
+library(stringr)
+clean_names <- function(name) {
+  name %>%
+    iconv(from = "", to = "UTF-8", sub = "") %>%     # Fix encoding
+    tolower() %>%                                    # Lowercase
+    str_replace_all("[^a-z0-9 ]", " ") %>%           # Remove punctuation
+    str_replace_all("\\s+", " ") %>%                 # Remove extra spaces
+    str_trim()
+}
+repdb <- readxl::read_xlsx(
+  file.path(path,"renew_energ_plan_db","repd-q1-apr-2025.xlsx"),
+  sheet = 2
+) %>% 
+  rename(
+    ref_id = `Ref ID`,
+    tech_typ = `Technology Type`,
+    devel_stat = `Development Status (short)`,
+    x_coord = `X-coordinate`,
+    y_coord = `Y-coordinate`) %>% 
+  mutate(clean_name = ifelse(is.na(clean_name),clean_names(`Site Name`),clean_name)) %>% 
+  filter(!is.na(clean_name))
+
+
+# info through robin hawkes website
+
+bmu_catalog <- wind.bmus %>% 
+  left_join(
+      bmu_to_dict,
+      by = c("elexonBmUnit"= "bmu_id")
+    ) %>% 
+  left_join(
+    loc_alt,
+    by = c("dict_id"= "dictionary_id")
+  ) %>% 
+  mutate(
+    clean_name = clean_names(leadPartyName),
+    clean_name = case_when(
+      clean_name %in% c(
+        "edf energy customers limited",
+        "edf energy customers limited",
+        "eneco energy trade",
+        "erova energy limited",
+        "smartestenergy limited",
+        "statkraft markets gmbh",
+        "npower commercial gas limited",
+        "vattenfall energy trading") ~ clean_names(bmUnitName),
+      
+      TRUE ~ clean_name
+    ))
+# repdb through id_catalog
+
+
+bmu_catalog2 <- bmu_catalog %>% 
+  left_join(
+    repdb %>% 
+      select(clean_name,`Site Name`,ref_id, tech_typ,
+             `Installed Capacity (MWelec)`,`Turbine Capacity`,`No. of Turbines`,
+             devel_stat,Region,x_coord,y_coord,),
+    by = c("clean_name")
+  )
+
+
+missing_latlon <- bmu_catalog2 %>%
+  filter(is.na(latitude) & !is.na(x_coord) & !is.na(y_coord)) %>%
+  st_as_sf(coords = c("x_coord", "y_coord"), crs = 27700) %>%
+  st_transform(4326)
+
+missing_latlon_coords <- missing_latlon %>%
+  mutate(
+    longitude = st_coordinates(.)[,1],
+    latitude = st_coordinates(.)[,2]
+  ) %>%
+  st_drop_geometry()
+
+
+bmu_catalog2 <- bmu_catalog2 %>% 
+  filter(!is.na(latitude)) %>% 
+  bind_rows(
+    missing_latlon_coords
+  )
+```
+```{r}
+bmu_25 <- bmu_df %>% 
+  group_by(bmUnit) %>% 
+  summarise(quantity = mean(quantity, na.rm = TRUE)) %>% 
+  left_join(
+    bmu_catalog2,
+    by = c("bmUnit" = "elexonBmUnit")
+  ) 
+
+
+bmu_25_sf <- bmu_25 %>% 
+  filter(!is.na(longitude)) %>% 
+   st_as_sf(coords = c("longitude","latitude"), crs = 4326) 
+
+mpow25 <- bmu_25 %>% 
+  summarise(quantity = sum(quantity)) %>% pull(quantity)
+
+mpow25_loc <- bmu_25_sf %>% 
+  summarise(quantity = sum(quantity)) %>% pull(quantity)
+
+mpow25_loc/mpow25
+
+p <- bmu_25_sf %>%  
+  ggplot()+
+  geom_sf(data = uk_ie, fill = "gray95", color = "gray70") +  # map background
+  geom_sf(aes(geometry = geometry, col = quantity, text = paste("BMU Name:", bmUnitName)), size = 1)+
+  coord_sf(datum = 4326, crs = 4326)+
+  # scale_color_aaas()+
+  # scale_color_manual(values = pal_aaas()(3)[c(2,3)])+
+  labs(col = "mean generation MW", title = "Wind BM Units 2025")+ theme(legend.position = "bottom")+
+  scale_color_viridis_c()
+p
+# plotly::ggplotly(
+#   p
+# )
+
+```
+
+### BMU data check
+
+#### updated coverage with MWh conversion
+
+##### 2025
+
+```{r}
+bmu_df <- fread(
+  file.path(path,"data_by_year","wind_gen_bmu_2025.csv.gz")
+)
+
+elex_cov <- bmu_df %>% 
+  # aggregate half hour generation
+  group_by(bmUnit) %>% arrange(halfHourEndTime) %>% 
+  mutate(quantity = quantity + lag(quantity)) %>% 
+  filter(quantity>0) %>% 
+  filter(minute(halfHourEndTime) == 0) %>% 
+  group_by(
+    halfHourEndTime
+  ) %>% summarise(bmu_total = sum(quantity, na.rm = T)) %>% 
+  left_join(
+    agpt %>% 
+      filter(grepl("Wind",psrType, ignore.case = TRUE)  ) %>%
+      filter(minute(startTime)==0) %>% 
+      group_by(startTime) %>% summarise(total = sum(quantity, na.rm = T)),
+    by = c("halfHourEndTime" = "startTime")
+  ) 
+
+elex_cov %>% 
+  mutate(date = date(halfHourEndTime)) %>% 
+  group_by(date) %>% 
+  summarise(across(matches("total"),~mean(., na.rm = TRUE))) %>%
+  pivot_longer(cols = matches("total")) %>% 
+  ggplot()+
+  geom_line(aes(date,value,colour = name))+
+  theme(legend.position = "bottom")+
+  scale_x_date()+
+  scale_y_continuous(limits = c(0,20000))+
+  scale_color_manual(values = c(pal_aaas()(2)[2],pal_aaas()(2)[1]), labels = c("BMU","AGPT"))+
+  labs(y="generation (MW)", x = "Date", col = "")
+```
+
+```{r}
+bmu_df %>% 
+  pull(bmUnit) %>% unique() %>% length()
+elex_cov %>% 
+  mutate(date = date(halfHourEndTime)) %>% 
+  group_by(date) %>% 
+  summarise(across(matches("total"),~mean(., na.rm = TRUE))) %>% 
+  mutate(perc = bmu_total/total*100) %>% 
+  summarise(coverage = mean(perc, na.rm =T))
+```
+
+##### 2024
+
+```{r}
+bmu_df <- fread(
+  file.path(path,"data_by_year","wind_gen_bmu_2024.csv.gz")
+)
+
+agpt <- fread(
+  file.path(
+    elexon_path,
+    "data_by_year",
+    "aggregated_gen_type_2024.csv.gz"))
+
+elex_cov <- bmu_df %>% 
+  # aggregate half hour generation
+  group_by(bmUnit) %>% arrange(halfHourEndTime) %>% 
+  mutate(quantity = quantity + lag(quantity)) %>% 
+  filter(quantity>0) %>% 
+  filter(minute(halfHourEndTime) == 0) %>% 
+  group_by(
+    halfHourEndTime
+  ) %>% summarise(bmu_total = sum(quantity, na.rm = T)) %>% 
+  left_join(
+    agpt %>% 
+      filter(grepl("Wind",psrType, ignore.case = TRUE)  ) %>%
+      filter(minute(startTime)==0) %>% 
+      group_by(startTime) %>% summarise(total = sum(quantity, na.rm = T)),
+    by = c("halfHourEndTime" = "startTime")
+  ) 
+
+elex_cov %>% 
+  mutate(date = date(halfHourEndTime)) %>% 
+  group_by(date) %>% 
+  summarise(across(matches("total"),~mean(., na.rm = TRUE))) %>%
+  pivot_longer(cols = matches("total")) %>% 
+  ggplot()+
+  geom_line(aes(date,value,colour = name))+
+  theme(legend.position = "bottom")+
+  scale_x_date()+
+  scale_y_continuous(limits = c(0,20000))+
+  scale_color_manual(values = c(pal_aaas()(2)[2],pal_aaas()(2)[1]))+
+  labs(y="generation (MW)", x = "Date", col = "")
+```
+
+```{r}
+bmu_df %>% 
+  pull(bmUnit) %>% unique() %>% length()
+elex_cov %>% 
+  mutate(date = date(halfHourEndTime)) %>% 
+  group_by(date) %>% 
+  summarise(across(matches("total"),~mean(., na.rm = TRUE))) %>% 
+  mutate(perc = bmu_total/total*100) %>% 
+  summarise(coverage = mean(perc, na.rm =T))
+```
+
+```{r}
+# agpt 2024
+agpt24_wind <- agpt %>% 
+  filter(grepl("Wind",psrType)) %>%
+  group_by(startTime) %>% filter(publishTime == max(publishTime)) %>% ungroup() %>%
+  group_by(startTime) %>%
+  summarise(quantity = sum(quantity)) %>% 
+  arrange(startTime) 
+
+agpt24_wind %>% 
+  ggplot()+
+  geom_line(aes(startTime,quantity))
+
+
+# agpt 2024
+agpt24_wind2 <- agpt %>% 
+  filter(grepl("Wind",psrType)) %>%
+  group_by(startTime) %>% filter(publishTime == max(publishTime)) %>% ungroup() %>%
+  # group_by(startTime) %>%
+  # summarise(quantity = sum(quantity)) %>% 
+  arrange(startTime) 
+
+agpt24_wind2 %>% 
+  ggplot()+
+  geom_line(aes(startTime,quantity, col = psrType))
+
+# agpt 2024
+agpt %>% 
+  filter(!grepl("Wind",psrType)) %>%
+  group_by(startTime) %>% filter(publishTime == max(publishTime)) %>% ungroup() %>%
+  arrange(startTime) %>% 
+  group_by(psrType,settlementDate) %>% summarise(quantity = mean(quantity, na.rm = TRUE)) %>% 
+  ggplot()+
+  geom_line(aes(settlementDate,quantity, col = psrType))
+
+```
+
+######vs Day ahead
+
+```{r}
+
+# read 2025 forecast
+dwgs <- fread(
+  file.path(
+    elexon_path,
+    "data_by_year",
+    "dayahead_generation_windsolar_2024.csv.gz"))
+
+
+dwgs %>% 
+  filter(processType %in% c("Day ahead")) %>% 
+  group_by(startTime) %>% filter(publishTime == max(publishTime)) %>% ungroup() %>%
+  filter(grepl("Wind",psrType, ignore.case = TRUE)  ) %>%
+  filter(minute(startTime)==0) %>%
+  ggplot()+
+  geom_line(aes(startTime,quantity,colour = psrType, group = psrType))+
+  theme(legend.position = "bottom")+
+  scale_x_datetime(date_labels = "%Y-%m-%d %H:%M")+
+  scale_y_continuous(limits = c(0,12500))+
+  scale_color_aaas()
+
+dwgs %>%
+  filter(processType %in% c("Day ahead")) %>% 
+  group_by(startTime) %>% filter(publishTime == max(publishTime)) %>% ungroup() %>%
+  group_by(settlementDate, psrType) %>% 
+  summarise(quantity = mean(quantity,na.rm = T), .groups = "drop") %>% 
+  filter(grepl("Wind",psrType, ignore.case = TRUE)  ) %>%
+  ggplot()+
+  geom_line(aes(settlementDate,quantity,colour = psrType, group = psrType))+
+  theme(legend.position = "bottom")+
+  scale_x_date()+
+  scale_y_continuous(limits = c(0,12500))+
+  scale_color_aaas()
+
+```
+
+```{r}
+
+dwgs %>%
+  filter(processType %in% c("Day ahead")) %>% 
+  group_by(settlementDate, psrType) %>% 
+  summarise(quantity = mean(quantity,na.rm = T), .groups = "drop") %>% 
+  mutate(series = "forecast") %>% 
+  bind_rows(
+    agpt %>% 
+      group_by(settlementDate, psrType) %>% 
+      summarise(quantity = mean(quantity), .groups = "drop") %>% 
+      filter(grepl("Wind|Solar",psrType, ignore.case = TRUE)  ) %>%
+      mutate(series = "observed")
+  ) %>% 
+  mutate(
+    psrType = factor(
+      psrType, 
+      levels = c("Wind Offshore","Wind Onshore","Solar")),
+    series = factor(series, levels = c("observed","forecast"))
+    ) %>% 
+  ggplot()+
+  geom_line(aes(settlementDate,quantity,colour = series))+
+  facet_wrap(~psrType,nrow = 3)+
+  theme(legend.position = "bottom")+
+  scale_x_date()+
+  scale_y_continuous(limits = c(0,12500))+
+  scale_color_manual(values = c(pal_aaas()(2)[2],pal_aaas()(2)[1]))+
+  labs(y="generation (MW)", x = "Date", col = "")
+```
+
+##### 2023
+
+```{r}
+bmu_df <- fread(
+  file.path(path,"data_by_year","wind_gen_bmu_2023.csv.gz")
+)
+
+agpt <- fread(
+  file.path(
+    elexon_path,
+    "data_by_year",
+    "aggregated_gen_type_2023.csv.gz"))
+
+elex_cov <- bmu_df %>% 
+  # aggregate half hour generation
+  group_by(bmUnit) %>% arrange(halfHourEndTime) %>% 
+  mutate(quantity = quantity + lag(quantity)) %>% 
+  filter(quantity>0) %>% 
+  filter(minute(halfHourEndTime) == 0) %>% 
+  group_by(
+    halfHourEndTime
+  ) %>% summarise(bmu_total = sum(quantity, na.rm = T)) %>% 
+  left_join(
+    agpt %>% 
+      filter(grepl("Wind",psrType, ignore.case = TRUE)  ) %>%
+      filter(minute(startTime)==0) %>% 
+      group_by(startTime) %>% summarise(total = sum(quantity, na.rm = T)),
+    by = c("halfHourEndTime" = "startTime")
+  ) 
+
+elex_cov %>% 
+  mutate(date = date(halfHourEndTime)) %>% 
+  group_by(date) %>% 
+  summarise(across(matches("total"),~mean(., na.rm = TRUE))) %>%
+  pivot_longer(cols = matches("total")) %>% 
+  ggplot()+
+  geom_line(aes(date,value,colour = name))+
+  theme(legend.position = "bottom")+
+  scale_x_date()+
+  scale_y_continuous(limits = c(0,20000))+
+  scale_color_manual(values = c(pal_aaas()(2)[2],pal_aaas()(2)[1]))+
+  labs(y="generation (MW)", x = "Date", col = "")
+```
+
+```{r}
+bmu_df %>% 
+  pull(bmUnit) %>% unique() %>% length()
+elex_cov %>% 
+  mutate(date = date(halfHourEndTime)) %>% 
+  group_by(date) %>% 
+  summarise(across(matches("total"),~mean(., na.rm = TRUE))) %>% 
+  mutate(perc = bmu_total/total*100) %>% 
+  summarise(coverage = mean(perc, na.rm =T))
+```
+
+# BMU CHECK
+
+### hornsea 2022
+
+BMU data from B1610 is MWh, multiply by 2 or add two half hour periods to get hourly generation. its missing bid offer acceptances.
+
+```{r}
+bmu_22 <-  fread(
+  file.path(path,"data_by_year","wind_gen_bmu_2022.csv.gz")
+)
+
+bmu_22 %>% 
+  filter(grepl("HOWAO", bmUnit)) %>% 
+  filter(settlementDate %in% c(as.Date("2022-09-26"))) %>% 
+  group_by(halfHourEndTime) %>% summarise(quantity = sum(quantity), .groups = "drop") %>% 
+  arrange(halfHourEndTime) %>% 
+  mutate(
+    q2 = quantity*2,
+    qh = quantity +lag(quantity)) %>% 
+  view()
+```
+
+```{r}
+# date range
+bmu_df$settlementDate %>% range()
+
+
+repd_subset
+
+
+```
+
+```{r}
+bmu_t0 <- bmu_df %>% 
+  select(-c(V1:psrType)) %>% 
+  filter(
+    settlementDate %in% c("2025-05-29")
+  ) %>% 
+  filter(
+    halfHourEndTime > as.POSIXct("2025-05-29 05:00:00", tz="UTC"),
+    halfHourEndTime <= as.POSIXct("2025-05-29 10:00:00", tz="UTC"),
+    ) %>% 
+  group_by(bmUnit) %>% arrange(halfHourEndTime) %>% 
+  mutate(
+    generation = quantity + lag(quantity)
+  )
+
+bmu_t0 %>% 
+  summarise(quantity = sum(quantity))
+
+
+hawkes_df <- readxl::read_xlsx(
+  path = file.path(path,"gb_renewables_hawkes.xlsx"))
+
+
+hawkes_df %>% 
+  summarise(generation = sum(`Gen. (MW)`, na.rm = TRUE))
+```
+
+```{r}
+bmu_t0 %>% 
+  group_by(bmUnit) %>% arrange(halfHourEndTime) %>% 
+  mutate(
+    generation = quantity + lag(quantity)
+  ) %>% ungroup() %>% 
+  # filter(grepl("WLN",bmUnit) ) %>% 
+  group_by(hour(halfHourEndTime)) %>% 
+  summarise(quantity = sum(quantity), .groups = "drop")
+```
+
+```{r}
+agpt25 %>% pull(startTime) %>% range()
+agpt25 %>% 
+  filter(
+    startTime > as.POSIXct("2025-05-29 05:00:00", tz="UTC"),
+    startTime <= as.POSIXct("2025-05-29 10:00:00", tz="UTC")) %>% 
+  select(-businessType) %>% 
+  pivot_wider(names_from = psrType, values_from = quantity) %>% 
+  select(startTime:Solar) %>% 
+  arrange(startTime) %>% view()
+```
+
+###check against energy trends report
+
+#### 2024
+
+```{r}
+agpt24 <- fread(
+  file.path(
+    elexon_path,
+    "data_by_year",
+    "aggregated_gen_type_2024.csv.gz"))
+
+agpt_tbl <- agpt24 %>% 
+  # filter(
+  #   grepl("Wind ",psrType)) %>% 
+  group_by(startTime) %>% filter(publishTime == max(publishTime)) %>% ungroup() %>% 
+  mutate(psrType = case_when(
+    grepl("Wind", psrType) ~ "Wind", 
+    grepl("Hydro", psrType) ~ "Hydro", 
+    TRUE ~ psrType)) %>% 
+  group_by(psrType) %>%
+  arrange(psrType,startTime) %>% 
+  mutate(generation = quantity+lag(quantity)) %>%
+  filter(minute(startTime)==0) %>%
+  group_by(psrType) %>% summarise(quantity = sum(quantity)/1e3) %>%
+  filter(quantity>0) %>% 
+  janitor::adorn_totals() 
+
+agpt_tbl %>% 
+  kable(digits = 0, col.names = c("Fuel type","Generation GWh"),
+        format.args = list(big.mark = ",", scientific = FALSE)) %>% 
+  kable_styling(full_width = F)
+
+
+
+# agpt24 %>% 
+#   filter(
+#     grepl("Wind",psrType),
+#     settlementDate %in% c("2024-12-18")
+#   ) %>% 
+#   group_by(startTime) %>% filter(publishTime == max(publishTime)) %>% 
+#   select(psrType:settlementPeriod,matches("revision")) %>%
+#   arrange(startTime) %>% #view()
+#   pivot_wider(names_from = psrType, values_from = quantity) %>% 
+#   # group_by(startTime) %>% 
+#   # mutate(onshore= `Wind Onshore`+lag(`Wind Onshore`) ) %>%
+#   mutate(total = `Wind Onshore` + `Wind Offshore`) %>% 
+#   # ungroup() %>% 
+#   filter(minute(startTime)==0)
+```
+```{r}
+library(officer)
+library(flextable)
+
+ft <- agpt_tbl %>%
+  mutate(quantity = scales::comma(quantity, accuracy = 1)) %>% 
+  rename(`Fuel type` = psrType, `Generation GWh` = quantity) %>% 
+  flextable() %>% 
+  autofit() %>%
+  align(align = "center", part = "all") %>%
+  align(j = "Generation GWh", align = "right", part = "all") # right-align numbers
+
+# Export to Word
+read_docx() %>%
+  body_add_flextable(ft) %>%
+  print(target = "generation24_summary_fuel.docx")
+
+```
+
+```{r}
+bmu_24 <- fread(
+  file.path(path,"data_by_year","wind_gen_bmu_2024.csv.gz")
+) %>% 
+  filter(settlementDate %in% c("2024-12-18")) %>% 
+  group_by(bmUnit) %>% arrange(halfHourEndTime) %>% 
+  mutate(
+    generation = quantity + lag(quantity)
+  ) %>% ungroup() %>% 
+  filter(
+    halfHourEndTime > as.POSIXct("2024-12-18 03:00:00", tz="UTC"),
+    halfHourEndTime <= as.POSIXct("2024-12-18 03:30:00", tz="UTC"),
+    ) 
+
+bmu_24 %>% 
+  summarise(quantity = sum(generation))
+```
+
+#### 2023
+
+```{r}
+agpt23 <- fread(
+  file.path(
+    elexon_path,
+    "data_by_year",
+    "aggregated_gen_type_2022.csv.gz"))
+
+
+agpt23 %>% 
+  # filter(
+  #   grepl("Wind ",psrType)) %>% 
+  group_by(startTime) %>% filter(publishTime == max(publishTime)) %>% ungroup() %>% 
+  group_by(psrType) %>%
+  arrange(psrType,startTime) %>% 
+  mutate(generation = quantity+lag(quantity)) %>%
+  filter(minute(startTime)==0) %>%
+  group_by(psrType) %>% summarise(
+    quantity = sum(quantity)/1e3, generation = sum(generation, na.rm = T)/1e3) %>% 
+  janitor::adorn_totals()
+```
+
+### number of units in Hawkes website
+
+```{r}
+sum(hawkes_df$`Gen. (MW)`!=0, na.rm = T)
+```
+
+### all units
+
+```{r}
+url0 <- "https://data.elexon.co.uk/bmrs/api/v1/datasets/B1610/stream?from=2024-12-18T00%3A00Z&to=2024-12-19T00%3A00Z"
+
+bmu.string <- capacity %>% 
+  filter(grepl("Wind|Solar",psrType, ignore.case = TRUE)  ) %>% 
+  filter(!is.na(bmUnit)) %>% 
+  pull(bmUnit) %>% 
+  paste(.,collapse = "&bmUnit=")
+
+
+# bmu.string <- "T_HOWBO-1&bmUnit=T_HOWBO-3&bmUnit=T_HOWBO-2&bmUnit=T_HOWAO-3&bmUnit=T_HOWAO-2&bmUnit=T_HOWAO-1"
+
+
+url <- paste0(url0)
+
+response <- GET(url, accept("text/plain"))
+json_data <- content(response, "text", encoding = "UTF-8")
+generation.bmu <- fromJSON(json_data) %>% 
+  mutate(halfHourEndTime = as.POSIXct(halfHourEndTime, format = "%Y-%m-%dT%H:%M:%OS", tz = "UTC")) 
+```
+
+```{r}
+generation.bmu %>% 
+  group_by(halfHourEndTime) %>% 
+  summarise(quantity = sum(quantity))
+
+generation.bmu %>% pull(halfHourEndTime) %>% range()
+
+
+generation.bmu$halfHourEndTime %>% tz()
+generation.bmu %>% 
+  filter(
+    halfHourEndTime > as.POSIXct("2024-12-18 03:00", tz = "UTC"),
+    halfHourEndTime <= as.POSIXct("2024-12-18 04:30", tz = "UTC")
+    ) %>% 
+  mutate(sign = sign(quantity)) %>% 
+  group_by(halfHourEndTime, sign) %>% 
+  summarise(quantity = sum(quantity))
+```
+
+### mapping catalogs
+
+```{r}
+wind.bmus
+```
+
+```{r}
+repd_wind
+```
+
+```{r}
+id_catalog %>% 
+  filter(rep_id != "-")
+
+bmu_to_dict <- id_catalog %>% 
+  separate_rows(bmu_id, sep = ",\\s*") %>%
+  separate_rows(rep_id, sep = ",\\s*") %>%
+  select(dict_id, name, bmu_id, rep_id) %>% 
+  unique() %>% 
+  left_join(
+    repd_subset %>% 
+      select(ref_id:y_coord) %>% 
+      mutate(
+        ref_id = as.character(ref_id), 
+        operator = `Operator (or Applicant)`,
+        site_name = `Site Name`,
+        tech_typ,
+        capacity_repd = `Installed Capacity (MWelec)`),
+    by = c("rep_id"="ref_id")
+  )
+```
+
+```{r}
+temp <- bmus %>% 
+  filter(
+    grepl("WIND",fuelType) | 
+      grepl("wind|offshore", leadPartyName, ignore.case = TRUE )|
+      grepl("wind farm|windfarm", bmUnitName, ignore.case = TRUE )) #%>%
+  # filter(productionOrConsumptionFlag %in% c("P"))
+
+temp %>% group_by(leadPartyName) %>% 
+  summarise(capacity = sum(as.numeric(generationCapacity))) %>% 
+  arrange(desc(capacity))
+```
+
+## generation outurn summary
+
+```{r}
+get_outturn <- function(
+    year = 2024,
+    path,
+    file_name = sprintf("outturn_gen_type_%d.csv.gz",year),
+    end_time = NULL
+){
+  
+  if (is.null(end_time)){
+    time_seq <- dates <- seq.Date(
+    from = as.Date(sprintf("%d-01-01",year)),
+    to = as.Date(sprintf("%d-12-31",year)),
+    by = "4 days"
+    )
+    time_seq <- c(time_seq, as.Date(sprintf("%d-01-01",year+1)))
+  } else{
+    time_seq <- dates <- seq.Date(
+    from = as.Date(sprintf("%d-01-01",year)),
+    to = as.Date(end_time),
+    by = "4 days"
+    )
+    if(time_seq[length(time_seq)]<end_time) time_seq <- c(time_seq,end_time)
+  }
+  
+  
+  # browser()
+  extraction <- lapply(
+    seq_along(time_seq[-1]),
+    
+    
+    \(i){
+      
+    t0 <- as.character(time_seq[i])
+    t1 <- as.character(time_seq[i+1])
+    dt0 <- paste(t0, "01:00")
+    dt1 <- paste(t1, "01:00")
+    dt0_enc <- URLencode(dt0, reserved = TRUE)
+    dt1_enc <- URLencode(dt1, reserved = TRUE)
+    
+    base_url <- "https://data.elexon.co.uk/bmrs/api/v1/generation/outturn/summary?"
+    
+    url <- sprintf(
+      "%sstartTime=%s&endTimeTo=%s&includeNegativeGeneration=true&format=json",
+      base_url,dt0_enc, dt1_enc)
+    
+    response <- GET(url, accept("text/plain"))
+    json_data <- content(response, "text", encoding = "UTF-8")
+    browser()
+    blockdf <- json_data %>% 
+      fromJSON(flatten = T) %>% 
+      unnest(data) %>% 
+      mutate(across(matches("Time"), ~ as.POSIXct(., format = "%Y-%m-%dT%H:%M:%OS")))
+    blockdf}
+  )
+  
+  df <- extraction %>% bind_rows()
+
+  df %>% 
+    write.csv(
+      gzfile(file.path(path,file_name))
+    )
+  
+  invisible(df)
+}
+
+
+
+
+
+
+outturn24 <- get_outturn(
+  year = 2025,
+  path = file.path(path,"data_by_year"),
+  end_time = "2025-01-30")
+# outturn24 <- outturn25
+outturn24 <- get_outturn(
+  year = 2025,
+  path = file.path(path,"data_by_year"),
+  end_time = "2025-05-30")
+```
+
+```{r}
+ t0 <- "2024-01-01"
+    # t1 <- as.character(time_seq[i+1])
+    dt0 <- paste(t0, "01:00")
+    # dt1 <- paste(t1, "01:00")
+    dt0_enc <- URLencode(dt0, reserved = TRUE)
+    # dt1_enc <- URLencode(dt1, reserved = TRUE)
+    
+    base_url <- "https://data.elexon.co.uk/bmrs/api/v1/generation/outturn/summary?"
+    
+    url <- sprintf(
+      "%sstartTime=%s&includeNegativeGeneration=true&format=json",
+      base_url,dt0_enc)
+    
+    response <- GET(url, accept("text/plain"))
+    json_data <- content(response, "text", encoding = "UTF-8")
+    # browser()
+    blockdf <- json_data %>% 
+      fromJSON(flatten = T) %>% 
+      unnest(data) %>% 
+      mutate(across(matches("Time"), ~ as.POSIXct(., format = "%Y-%m-%dT%H:%M:%OS")))
+    blockdf
+```
+
+```{r}
+
+```
+
+```{r}
+# blockdf %>% 
+#   filter(startTime == c("2024-12-18"))
+blockdf %>%
+  mutate(year = year(startTime)) %>% 
+  mutate(fuelType = ifelse(grepl("INT", fuelType),"INT",fuelType)) %>% 
+  group_by(year, fuelType) %>% 
+  summarise(
+    n = n(),
+    generation = sum(generation, na.rm = T)*24/1e6/n*365,
+    .groups = "drop") %>% 
+  select(-n) %>% 
+  pivot_wider(names_from = fuelType, values_from = generation) %>% 
+  view()
+```
+
+```{r}
+agpt$psrType %>% unique() %>% paste(., collapse = ", ")
+```
+
