@@ -105,7 +105,7 @@ gen_adj <- bmu_df %>%
 # catalog with REPD variables
 
 ref_catalog_2025 <- read.csv(
-  gzfile(file.path("data/ref_catalog_wind_2025_era.csv.gz"))
+  gzfile(file.path("data/ref_catalog_wind_2025.csv.gz"))
 ) %>%
   mutate(operational_date = as.Date(operational_date))
 
