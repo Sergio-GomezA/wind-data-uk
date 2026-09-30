@@ -6,9 +6,41 @@ require(tidyr)
 require(data.table)
 require(arrow)
 
+
+wind_bmus_alt_fname <- "data/wind_bmu_alt.csv"
+if (!file.exists(wind_bmus_alt_fname)) {
+  power_park <- readxl::read_xlsx(
+    "data/power-park-modules.xlsx",
+    sheet = 1,
+    n_max = 252
+  ) %>%
+    rename(
+      elexonBmUnit = `Settlement BMU name`,
+      capacity_alt = `BMU or Large Reg Cap only`
+    )
+  names(power_park) <- tolower(gsub(" ", "_", names(power_park)))
+  wind.bmus.alt <- wind.bmus %>%
+    left_join(
+      power_park %>% dplyr::select(elexonbmunit, capacity_alt),
+      by = c("elexonBmUnit" = "elexonbmunit")
+    ) %>%
+    mutate(
+      diff_cap = abs(generationCapacity - capacity_alt),
+      capacity = case_when(
+        is.na(capacity_alt) ~ generationCapacity,
+        capacity_alt <= 0 ~ generationCapacity,
+        diff_cap > generationCapacity * 0.1 ~ capacity_alt,
+        TRUE ~ generationCapacity
+      )
+    )
+} else {
+  wind.bmus.alt <- read.csv(wind_bmus_alt_fname)
+}
+
 # read data ####
-path <- "~/Documents/elexon/data_by_year"
+path <- "../elexon_data/data_by_year"
 year_seq <- seq(2019, 2025, 1)
+year_seq <- seq(2025, 2025, 1)
 # generation
 bmu_df <- lapply(year_seq, function(x) {
   file_path <- file.path(
@@ -70,78 +102,93 @@ gen_adj <- bmu_df %>%
     cap_factor = ifelse(capacity > 0, potential / capacity)
   )
 
+# catalog with REPD variables
 
-# add outages ####
-# remit_df <- lapply(
-#   2019:2025,
-#   \(y) {
-#     read_parquet(
-#       file.path("~/Documents/elexon/", sprintf("remit_all_%d.parquet", y))
-#     )
-#   }
-# ) %>%
-#   bind_rows()
+ref_catalog_2025 <- read.csv(
+  gzfile(file.path("data/ref_catalog_wind_2025_era.csv.gz"))
+) %>%
+  mutate(operational_date = as.Date(operational_date))
 
-# remit_df <- remit_df %>%
-#   filter(eventStatus == "Active") %>%
-#   mutate(
-#     elexonBmUnit = case_when(
-#       # asset matches bmUnit
-#       assetId %in% wind.bmus.alt$elexonBmUnit ~ assetId,
-#       # asset matches with T_
-#       paste0("T_", assetId) %in% wind.bmus.alt$elexonBmUnit ~ paste0(
-#         "T_",
-#         assetId
-#       ),
-#       # affected unit matches
-#       toupper(affectedUnit) %in% wind.bmus.alt$elexonBmUnit ~ affectedUnit,
-#       # affected unit matches with T_
-#       paste0("T_", toupper(affectedUnit)) %in%
-#         wind.bmus.alt$elexonBmUnit ~ paste0("T_", toupper(affectedUnit)),
-#       # special cases
-#       grepl("LARYO", assetId) ~ paste0("T_", gsub("O", "W", assetId)),
-#       grepl("RAMP", assetId) ~ paste0("T_", gsub("RAMP", "RMPNO", assetId)),
-#       # else
-#       TRUE ~ NA
-#     ),
-#     inelexon = !is.na(elexonBmUnit)
-#   ) %>%
-#   left_join(
-#     ref_catalog_2025 %>% select(bmUnit, tech_typ),
-#     by = c("elexonBmUnit" = "bmUnit")
-#   ) %>%
-#   filter(
-#     !is.na(elexonBmUnit)
-#   ) %>%
-#   unique() %>%
-#   unnest(outageProfile, keep_empty = TRUE) %>%
-#   mutate(
-#     startTime = if_else(
-#       is.na(startTime),
-#       eventStartTime,
-#       startTime %>%
-#         ymd_hms(., format = "%Y-%m-%dT%H:%M:%OSZ", tz = "UTC")
-#     ),
-#     endTime = if_else(
-#       is.na(endTime),
-#       eventEndTime,
-#       endTime %>%
-#         ymd_hms(., format = "%Y-%m-%dT%H:%M:%OSZ", tz = "UTC")
-#     ),
-#     capacity = if_else(is.na(capacity), availableCapacity, capacity),
-#   ) %>%
-#   # mutate(
-#   #   endTime = if_else(endTime < startTime, startTime + hours(1), endTime)
-#   # ) %>%
-#   filter(!is.na(capacity)) %>%
-#   rename(outageCapacity = capacity) %>%
-#   select(
-#     startTime,
-#     endTime,
-#     elexonBmUnit,
-#     normalCapacity,
-#     outageCapacity
-#   )
+remit_df <- lapply(
+  year_seq,
+  \(y) {
+    read_parquet(
+      file.path("~/Documents/elexon/", sprintf("remit_all_%d.parquet", y))
+    )
+  }
+) %>%
+  bind_rows()
+
+# get BmUnit
+remit_df <- remit_df %>%
+  mutate(
+    elexonBmUnit = case_when(
+      # asset matches bmUnit
+      assetId %in% wind.bmus.alt$elexonBmUnit ~ assetId,
+      # asset matches with T_
+      paste0("T_", assetId) %in% wind.bmus.alt$elexonBmUnit ~ paste0(
+        "T_",
+        assetId
+      ),
+      # affected unit matches
+      toupper(affectedUnit) %in% wind.bmus.alt$elexonBmUnit ~ affectedUnit,
+      # affected unit matches with T_
+      paste0("T_", toupper(affectedUnit)) %in%
+        wind.bmus.alt$elexonBmUnit ~ paste0("T_", toupper(affectedUnit)),
+      # special cases
+      grepl("LARYO", assetId) ~ paste0("T_", gsub("O", "W", assetId)),
+      grepl("RAMP", assetId) ~ paste0("T_", gsub("RAMP", "RMPNO", assetId)),
+      # else
+      TRUE ~ NA
+    ),
+    inelexon = !is.na(elexonBmUnit)
+  ) %>%
+  left_join(
+    ref_catalog_2025 %>% select(bmUnit, tech_typ, lon, lat),
+    by = c("elexonBmUnit" = "bmUnit")
+  )
+
+remit_wf <- remit_df %>%
+  filter(
+    eventStatus == "Active",
+    !is.na(elexonBmUnit),
+    # grepl("Wind", fuelType)
+    eventStartTime < eventEndTime,
+    !is.na(normalCapacity)
+  ) %>%
+  mutate(
+    mincapacity = ifelse(
+      is.na(outageProfile),
+      availableCapacity,
+      purrr::map_dbl(outageProfile, ~ min(.x$capacity))
+    ),
+    capacity_impact = normalCapacity - mincapacity,
+    capacity_imp_perc = capacity_impact / normalCapacity * 100
+  ) %>%
+  filter(capacity_impact > 0) %>%
+  unique() %>%
+  mutate(
+    eventEndTime = as.POSIXct(
+      eventEndTime,
+      format = "%Y-%m-%dT%H:%M:%OSZ",
+      tz = "UTC"
+    ),
+    eventStartTime = as.POSIXct(
+      eventStartTime,
+      format = "%Y-%m-%dT%H:%M:%OSZ",
+      tz = "UTC"
+    ),
+    duration = as.numeric(difftime(
+      eventEndTime,
+      eventStartTime,
+      units = "hours"
+    ))
+  )
+
+write_parquet(
+  remit_wf,
+  sink = "~/Documents/elexon/remit_wind.parquet"
+)
 
 remit_wf <- read_parquet("~/Documents/elexon/remit_wind.parquet") %>%
   unnest(outageProfile, keep_empty = TRUE) %>%
